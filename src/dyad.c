@@ -6,7 +6,9 @@
  */
 
 #ifdef _WIN32
+  #ifndef _WIN32_WINNT
   #define _WIN32_WINNT 0x501
+  #endif
   #ifndef _CRT_SECURE_NO_WARNINGS
     #define _CRT_SECURE_NO_WARNINGS
   #endif
@@ -14,6 +16,9 @@
   #include <ws2tcpip.h>
   #include <Mstcpip.h>
   #include <windows.h>
+  #ifndef SIO_LOOPBACK_FAST_PATH
+    #define SIO_LOOPBACK_FAST_PATH              _WSAIOW(IOC_VENDOR,16)
+  #endif
 #else
   #define _POSIX_C_SOURCE 200809L
   #ifdef __APPLE__
@@ -56,6 +61,7 @@
   #undef  EWOULDBLOCK
   #define EWOULDBLOCK WSAEWOULDBLOCK
 
+  #define inet_ntop inet_ntop2
   const char *inet_ntop(int af, const void *src, char *dst, socklen_t size) {
     union { struct sockaddr sa; struct sockaddr_in sai;
             struct sockaddr_in6 sai6; } addr;
@@ -102,7 +108,7 @@ static void dyad_free(void *ptr) {
 /* Vec (dynamic array)                                                       */
 /*===========================================================================*/
 
-static void vec_expand(char **data, int *length, int *capacity, int memsz) {
+static void Vec_expand(char **data, int *length, int *capacity, int memsz) {
   if (*length + 1 > *capacity) {
     if (*capacity == 0) {
       *capacity = 1;
@@ -113,7 +119,7 @@ static void vec_expand(char **data, int *length, int *capacity, int memsz) {
   }
 }
 
-static void vec_splice(
+static void Vec_splice(
   char **data, int *length, int *capacity, int memsz, int start, int count
 ) {
   (void) capacity;
@@ -127,29 +133,29 @@ static void vec_splice(
   struct { T *data; int length, capacity; }
 
 
-#define vec_unpack(v)\
+#define Vec_unpack(v)\
   (char**)&(v)->data, &(v)->length, &(v)->capacity, sizeof(*(v)->data)
 
 
-#define vec_init(v)\
+#define Vec_init(v)\
   memset((v), 0, sizeof(*(v)))
 
 
-#define vec_deinit(v)\
+#define Vec_deinit(v)\
   dyad_free((v)->data)
 
 
-#define vec_clear(v)\
+#define Vec_clear(v)\
   ((v)->length = 0)
 
 
-#define vec_push(v, val)\
-  ( vec_expand(vec_unpack(v)),\
+#define Vec_push(v, val)\
+  ( Vec_expand(Vec_unpack(v)),\
     (v)->data[(v)->length++] = (val) )
 
 
-#define vec_splice(v, start, count)\
-  ( vec_splice(vec_unpack(v), start, count),\
+#define Vec_splice(v, start, count)\
+  ( Vec_splice(Vec_unpack(v), start, count),\
     (v)->length -= (count) )
 
 
@@ -409,9 +415,9 @@ static void stream_destroy(dyad_Stream *stream) {
   *next = stream->next;
   dyad_streamCount--;
   /* Destroy and free */
-  vec_deinit(&stream->listeners);
-  vec_deinit(&stream->lineBuffer);
-  vec_deinit(&stream->writeBuffer);
+  Vec_deinit(&stream->listeners);
+  Vec_deinit(&stream->lineBuffer);
+  Vec_deinit(&stream->writeBuffer);
   dyad_free(stream->address);
   dyad_free(stream);
 }
@@ -511,9 +517,9 @@ static int win32EnableFastLoopbackPath(dyad_Socket socket) {
     0);
 
   if (status == SOCKET_ERROR) {
-    DWORD lastError = ::GetLastError();
+    DWORD lastError = GetLastError();
 
-    if (lastError = WSAEOPNOTSUPP) {
+    if (lastError == WSAEOPNOTSUPP) {
       /* Not supported on current Windows version. */
       return -2;
     }
@@ -595,7 +601,7 @@ static void stream_handleReceivedData(dyad_Stream *stream) {
       int i, start;
       char *buf;
       for (i = 0; i < size; i++) {
-        vec_push(&stream->lineBuffer, data[i]);
+        Vec_push(&stream->lineBuffer, data[i]);
       }
       start = 0;
       buf = stream->lineBuffer.data;
@@ -621,9 +627,9 @@ static void stream_handleReceivedData(dyad_Stream *stream) {
         }
       }
       if (start == stream->lineBuffer.length) {
-        vec_clear(&stream->lineBuffer);
+        Vec_clear(&stream->lineBuffer);
       } else {
-        vec_splice(&stream->lineBuffer, 0, start);
+        Vec_splice(&stream->lineBuffer, 0, start);
       }
     }
   }
@@ -680,9 +686,9 @@ static int stream_flushWriteBuffer(dyad_Stream *stream) {
       }
     }
     if (size == stream->writeBuffer.length) {
-      vec_clear(&stream->writeBuffer);
+      Vec_clear(&stream->writeBuffer);
     } else {
-      vec_splice(&stream->writeBuffer, 0, size);
+      Vec_splice(&stream->writeBuffer, 0, size);
     }
     /* Update status */
     stream->bytesSent += size;
@@ -934,7 +940,7 @@ void dyad_addListener(
   listener.event = event;
   listener.callback = callback;
   listener.udata = udata;
-  vec_push(&stream->listeners, listener);
+  Vec_push(&stream->listeners, listener);
 }
 
 
@@ -945,7 +951,7 @@ void dyad_removeListener(
   while (i--) {
     Listener *x = &stream->listeners.data[i];
     if (x->event == event && x->callback == callback && x->udata == udata) {
-      vec_splice(&stream->listeners, i, 1);
+      Vec_splice(&stream->listeners, i, 1);
     }
   }
 }
@@ -953,12 +959,12 @@ void dyad_removeListener(
 
 void dyad_removeAllListeners(dyad_Stream *stream, int event) {
   if (event == DYAD_EVENT_NULL) {
-    vec_clear(&stream->listeners);
+    Vec_clear(&stream->listeners);
   } else {
     int i = stream->listeners.length;
     while (i--) {
       if (stream->listeners.data[i].event == event) {
-        vec_splice(&stream->listeners, i, 1);
+        Vec_splice(&stream->listeners, i, 1);
       }
     }
   }
@@ -979,8 +985,8 @@ void dyad_close(dyad_Stream *stream) {
   e.msg = "stream closed";
   stream_emitEvent(stream, &e);
   /* Clear buffers */
-  vec_clear(&stream->lineBuffer);
-  vec_clear(&stream->writeBuffer);
+  Vec_clear(&stream->lineBuffer);
+  Vec_clear(&stream->writeBuffer);
 }
 
 
@@ -1093,7 +1099,7 @@ fail:
 void dyad_write(dyad_Stream *stream, const void *data, int size) {
   const char *p = (const char*)data;
   while (size--) {
-    vec_push(&stream->writeBuffer, *p++);
+    Vec_push(&stream->writeBuffer, *p++);
   }
   stream->flags |= DYAD_FLAG_WRITTEN;
 }
@@ -1116,25 +1122,25 @@ void dyad_vwritef(dyad_Stream *stream, const char *fmt, va_list args) {
             goto writeStr;
           }
           while ((c = fgetc(fp)) != EOF) {
-            vec_push(&stream->writeBuffer, c);
+            Vec_push(&stream->writeBuffer, c);
           }
           break;
         case 'c':
-          vec_push(&stream->writeBuffer, va_arg(args, int));
+          Vec_push(&stream->writeBuffer, va_arg(args, int));
           break;
         case 's':
           str = va_arg(args, char*);
           if (str == NULL) str = (char*)"(null)";
           writeStr:
           while (*str) {
-            vec_push(&stream->writeBuffer, *str++);
+            Vec_push(&stream->writeBuffer, *str++);
           }
           break;
         case 'b':
           str = va_arg(args, char*);
           c = va_arg(args, int);
           while (c--) {
-            vec_push(&stream->writeBuffer, *str++);
+            Vec_push(&stream->writeBuffer, *str++);
           }
           break;
         default:
@@ -1153,7 +1159,7 @@ void dyad_vwritef(dyad_Stream *stream, const char *fmt, va_list args) {
           goto writeStr;
       }
     } else {
-      vec_push(&stream->writeBuffer, *fmt);
+      Vec_push(&stream->writeBuffer, *fmt);
     }
     fmt++;
   }
