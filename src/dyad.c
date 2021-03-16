@@ -707,6 +707,8 @@ static int stream_flushWriteBuffer(dyad_Stream *stream) {
     e = createEvent(DYAD_EVENT_READY);
     e.msg = "stream is ready for more data";
     stream_emitEvent(stream, &e);
+  } else {
+      stream->flags |= DYAD_FLAG_WRITTEN;
   }
   /* Return 1 to indicate that more data can immediately be written to the
    * stream's socket */
